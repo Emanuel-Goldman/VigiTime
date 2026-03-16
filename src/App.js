@@ -52,21 +52,62 @@ function App() {
   const [selectedViewPeriod, setSelectedViewPeriod] = useState('');
   const isInitialMount = useRef(true);
   
-  // Load todos from localStorage
-  const loadTodosFromStorage = () => {
+  // Load todo lists from localStorage
+  const loadTodoListsFromStorage = () => {
     try {
-      const savedTodos = localStorage.getItem('vigitime-todos');
-      if (savedTodos) {
-        return JSON.parse(savedTodos);
+      const savedLists = localStorage.getItem('vigitime-todo-lists');
+      if (savedLists) {
+        return JSON.parse(savedLists);
       }
+      // Migrate old todos format to new lists format
+      const oldTodos = localStorage.getItem('vigitime-todos');
+      if (oldTodos) {
+        try {
+          const todos = JSON.parse(oldTodos);
+          if (Array.isArray(todos) && todos.length > 0) {
+            const defaultList = {
+              id: Date.now(),
+              name: 'My Todos',
+              todos: todos,
+              createdAt: new Date().toISOString()
+            };
+            const lists = [defaultList];
+            localStorage.setItem('vigitime-todo-lists', JSON.stringify(lists));
+            localStorage.removeItem('vigitime-todos'); // Remove old format
+            return lists;
+          }
+        } catch (e) {
+          console.error('Error migrating old todos:', e);
+        }
+      }
+      // Create default list if nothing exists
+      return [{
+        id: Date.now(),
+        name: 'My Todos',
+        todos: [],
+        createdAt: new Date().toISOString()
+      }];
     } catch (e) {
-      console.error('Error loading todos from storage:', e);
+      console.error('Error loading todo lists from storage:', e);
+      return [{
+        id: Date.now(),
+        name: 'My Todos',
+        todos: [],
+        createdAt: new Date().toISOString()
+      }];
     }
-    return [];
   };
 
-  const [todos, setTodos] = useState(loadTodosFromStorage);
+  const [todoLists, setTodoLists] = useState(loadTodoListsFromStorage);
+  const [selectedListId, setSelectedListId] = useState(() => {
+    const saved = localStorage.getItem('vigitime-selected-list-id');
+    if (saved) return saved;
+    const lists = loadTodoListsFromStorage();
+    return lists.length > 0 ? lists[0].id.toString() : null;
+  });
   const [newTodo, setNewTodo] = useState('');
+  const [newListName, setNewListName] = useState('');
+  const [showNewListInput, setShowNewListInput] = useState(false);
   const isInitialMountTodos = useRef(true);
   
   const [formData, setFormData] = useState({
@@ -150,14 +191,25 @@ function App() {
     localStorage.setItem('vigitime-entries', JSON.stringify(entries));
   }, [entries]);
 
-  // Save todos to localStorage whenever they change (but not on initial mount)
+  // Save todo lists to localStorage whenever they change (but not on initial mount)
   useEffect(() => {
     if (isInitialMountTodos.current) {
       isInitialMountTodos.current = false;
       return;
     }
-    localStorage.setItem('vigitime-todos', JSON.stringify(todos));
-  }, [todos]);
+    localStorage.setItem('vigitime-todo-lists', JSON.stringify(todoLists));
+  }, [todoLists]);
+
+  // Save selected list ID
+  useEffect(() => {
+    if (selectedListId) {
+      localStorage.setItem('vigitime-selected-list-id', selectedListId);
+    }
+  }, [selectedListId]);
+
+  // Get current list and todos
+  const currentList = todoLists.find(list => list.id.toString() === selectedListId) || todoLists[0];
+  const todos = currentList ? currentList.todos : [];
 
   const calculateHours = (startTime, endTime) => {
     if (!startTime || !endTime) return 0;
@@ -233,7 +285,7 @@ function App() {
   // Todo list functions
   const addTodo = (e) => {
     e.preventDefault();
-    if (!newTodo.trim()) return;
+    if (!newTodo.trim() || !currentList) return;
 
     const todo = {
       id: Date.now(),
@@ -242,18 +294,68 @@ function App() {
       createdAt: new Date().toISOString()
     };
 
-    setTodos(prev => [...prev, todo]);
+    setTodoLists(prev => prev.map(list =>
+      list.id === currentList.id
+        ? { ...list, todos: [...list.todos, todo] }
+        : list
+    ));
     setNewTodo('');
   };
 
   const toggleTodo = (id) => {
-    setTodos(prev => prev.map(todo =>
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
+    if (!currentList) return;
+    setTodoLists(prev => prev.map(list =>
+      list.id === currentList.id
+        ? {
+            ...list,
+            todos: list.todos.map(todo =>
+              todo.id === id ? { ...todo, completed: !todo.completed } : todo
+            )
+          }
+        : list
     ));
   };
 
   const deleteTodo = (id) => {
-    setTodos(prev => prev.filter(todo => todo.id !== id));
+    if (!currentList) return;
+    setTodoLists(prev => prev.map(list =>
+      list.id === currentList.id
+        ? { ...list, todos: list.todos.filter(todo => todo.id !== id) }
+        : list
+    ));
+  };
+
+  // List management functions
+  const createNewList = (e) => {
+    e.preventDefault();
+    if (!newListName.trim()) return;
+
+    const newList = {
+      id: Date.now(),
+      name: newListName.trim(),
+      todos: [],
+      createdAt: new Date().toISOString()
+    };
+
+    setTodoLists(prev => [...prev, newList]);
+    setSelectedListId(newList.id.toString());
+    setNewListName('');
+    setShowNewListInput(false);
+  };
+
+  const deleteList = (listId) => {
+    if (todoLists.length <= 1) {
+      alert('You must have at least one list');
+      return;
+    }
+    if (window.confirm('Are you sure you want to delete this list? All todos in it will be deleted.')) {
+      const newLists = todoLists.filter(list => list.id !== listId);
+      setTodoLists(newLists);
+      // Switch to first available list
+      if (newLists.length > 0) {
+        setSelectedListId(newLists[0].id.toString());
+      }
+    }
   };
 
   // Get entries filtered by selected period
@@ -517,22 +619,90 @@ function App() {
 
         <div className="todo-sidebar">
           <div className="todo-section">
-            <h2>Todo List</h2>
-            <form onSubmit={addTodo} className="todo-form">
-              <input
-                type="text"
-                value={newTodo}
-                onChange={(e) => setNewTodo(e.target.value)}
-                placeholder="Add a new task..."
-                className="todo-input"
-              />
-              <button type="submit" className="todo-add-button">Add</button>
-            </form>
-            
-            <div className="todo-stats">
-              <span>{activeTodos.length} active</span>
-              {completedTodos > 0 && <span>{completedTodos} completed</span>}
+            <div className="todo-header">
+              <h2>Todo Lists</h2>
+              <button
+                onClick={() => setShowNewListInput(!showNewListInput)}
+                className="new-list-button"
+                title="Create new list"
+              >
+                +
+              </button>
             </div>
+
+            {showNewListInput && (
+              <form onSubmit={createNewList} className="new-list-form">
+                <input
+                  type="text"
+                  value={newListName}
+                  onChange={(e) => setNewListName(e.target.value)}
+                  placeholder="List name..."
+                  className="todo-input"
+                  autoFocus
+                />
+                <div className="new-list-buttons">
+                  <button type="submit" className="todo-add-button">Create</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNewListInput(false);
+                      setNewListName('');
+                    }}
+                    className="cancel-button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <div className="lists-selector">
+              {todoLists.map(list => (
+                <div
+                  key={list.id}
+                  className={`list-item ${selectedListId === list.id.toString() ? 'active' : ''}`}
+                >
+                  <button
+                    onClick={() => setSelectedListId(list.id.toString())}
+                    className="list-name-button"
+                  >
+                    {list.name}
+                  </button>
+                  {todoLists.length > 1 && (
+                    <button
+                      onClick={() => deleteList(list.id)}
+                      className="list-delete-button"
+                      title="Delete list"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {currentList && (
+              <>
+                <div className="current-list-header">
+                  <h3>{currentList.name}</h3>
+                </div>
+                <form onSubmit={addTodo} className="todo-form">
+                  <input
+                    type="text"
+                    value={newTodo}
+                    onChange={(e) => setNewTodo(e.target.value)}
+                    placeholder="Add a new task..."
+                    className="todo-input"
+                  />
+                  <button type="submit" className="todo-add-button">Add</button>
+                </form>
+                
+                <div className="todo-stats">
+                  <span>{activeTodos.length} active</span>
+                  {completedTodos > 0 && <span>{completedTodos} completed</span>}
+                </div>
+              </>
+            )}
 
             <div className="todos-list">
               {todos.length === 0 ? (
